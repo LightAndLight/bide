@@ -10,7 +10,7 @@ data Destructor = DD
 data Cat = C | S
 
 data Syntax cat where
-  Constructor :: Constructor -> Syntax 'C
+  Ctor :: Constructor -> Syntax 'C
   Bracket :: Syntax 'S -> Syntax 'C
   Var :: Int -> Syntax 'S
   Ann :: Syntax 'C -> Syntax 'C -> Syntax 'S
@@ -28,17 +28,38 @@ index n (_:as)
   | otherwise = index (n-1) as
 
 isTypeOf :: Context -> Syntax 'C -> Syntax 'C -> Bool
-isTypeOf context ty (Bracket e) =
-  case inferType context e of
-    Nothing -> False
-    Just ty' -> ty == ty'
+isTypeOf = pre
+  where
+    pre :: Context -> Syntax 'C -> Syntax 'C -> Bool
+    pre context ty tm =
+      let
+        ty' = steps step ty
+      in
+        go context ty' tm
+
+    go :: Context -> Syntax 'C -> Syntax 'C -> Bool
+    go context ty (Bracket e) =
+      case inferType context e of
+        Nothing -> False
+        Just ty' -> ty == ty'
 
 inferType :: Context -> Syntax 'S -> Maybe (Syntax 'C)
-inferType context (Var n) = index n context
-inferType context (Ann tm ty)
-  | isTypeOf context (Constructor Type) ty, isTypeOf context ty tm = Just tm
-  | otherwise = Nothing
-inferType context s = undefined
+inferType = post
+  where
+    post :: Context -> Syntax 'S -> Maybe (Syntax 'C)
+    post context tm = steps step <$> go context tm
+
+    go :: Context -> Syntax 'S -> Maybe (Syntax 'C)
+    go context (Var n) = index n context
+    go context (Ann tm ty)
+      | isTypeOf context (Ctor Type) ty, isTypeOf context ty tm = Just tm
+      | otherwise = Nothing
+    go context s = undefined
 
 step :: Syntax cat -> Maybe (Syntax cat)
 step = undefined
+
+steps :: (a -> Maybe a) -> a -> a
+steps f = go
+  where
+    go a = maybe a go (f a)
