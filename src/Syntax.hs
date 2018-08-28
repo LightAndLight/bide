@@ -13,6 +13,10 @@ data Syntax cat where
   Type :: Syntax 'C
   Pi :: Syntax 'C -> Syntax 'C -> Syntax 'C
   Lambda :: Syntax 'C -> Syntax 'C
+  Fst :: Syntax 'C
+  Snd :: Syntax 'C
+  Sigma :: Syntax 'C -> Syntax 'C -> Syntax 'C
+  MkSigma :: Syntax 'C -> Syntax 'C -> Syntax 'C
 
   -- Destructors, or elimination forms
   App :: Syntax 'S -> Syntax 'C -> Syntax 'S
@@ -26,32 +30,37 @@ data Syntax cat where
 deriving instance Eq (Syntax cat)
 deriving instance Show (Syntax cat)
 
-mkPi :: String -> Syntax 'C -> Syntax 'C -> Syntax 'C
-mkLambda :: String -> Syntax 'C -> Syntax 'C
-
-(mkPi, mkLambda) = (mkPi', mkLambda')
+abstract :: String -> Syntax a -> Syntax a
+abstract name = go 0
   where
-    mkPi' a b c = Pi b (abstract a c)
-    mkLambda' a b = Lambda $ abstract a b
+    go :: Int -> Syntax a -> Syntax a
+    go !depth e =
+      case e of
+        Fst -> Fst
+        Snd -> Snd
+        Type -> Type
+        Pi a b -> Pi (go depth a) (go (depth+1) b)
+        Lambda a -> Lambda $ go (depth+1) a
+        App a b -> App (go depth a) (go depth b)
+        Sigma a b -> Sigma (go depth a) (go (depth+1) b)
+        MkSigma a b -> MkSigma (go depth a) (go depth b)
+        Embed a -> Embed $ go depth a
+        Ann a b -> Ann (go depth a) (go depth b)
+        Var n
+          | n >= depth -> Var (n+1)
+          | otherwise -> Var n
+        Name s
+          | s == name -> Var depth
+          | otherwise -> Name s
 
-    abstract :: String -> Syntax a -> Syntax a
-    abstract name = go 0
-      where
-        go :: Int -> Syntax a -> Syntax a
-        go !depth e =
-          case e of
-            Type -> Type
-            Pi a b -> Pi (go depth a) (go (depth+1) b)
-            Lambda a -> Lambda $ go (depth+1) a
-            App a b -> App (go depth a) (go depth b)
-            Embed a -> Embed $ go depth a
-            Ann a b -> Ann (go depth a) (go depth b)
-            Var n
-              | n >= depth -> Var (n+1)
-              | otherwise -> Var n
-            Name s
-              | s == name -> Var depth
-              | otherwise -> Name s
+mkPi :: String -> Syntax 'C -> Syntax 'C -> Syntax 'C
+mkPi a b c = Pi b (abstract a c)
+
+mkSigma :: String -> Syntax 'C -> Syntax 'C -> Syntax 'C
+mkSigma a b c = Sigma b (abstract a c)
+
+mkLambda :: String -> Syntax 'C -> Syntax 'C
+mkLambda a b = Lambda $ abstract a b
 
 subst :: Syntax 'S -> Syntax a -> Syntax a
 subst x = go 0
@@ -59,8 +68,12 @@ subst x = go 0
     go :: Int -> Syntax a -> Syntax a
     go !depth e =
       case e of
+        Fst -> Fst
+        Snd -> Snd
         Type -> Type
         Pi a b -> Pi (go depth a) (go (depth+1) b)
+        Sigma a b -> Sigma (go depth a) (go (depth+1) b)
+        MkSigma a b -> MkSigma (go depth a) (go depth b)
         Lambda a -> Lambda $ go (depth+1) a
         App a b -> App (go depth a) (go depth b)
         Embed a -> Embed $ go depth a
@@ -86,7 +99,7 @@ index n (a:as) =
 {- |
 
 Σ(chk, (syn)chk)chk
-σ(chk, chk)dst
+σ(chk, chk)chk
 
 ⋆ ∋ S    x : S ⊢ ⋆ ∋ T(x)
 ————————————————————————
@@ -96,6 +109,15 @@ index n (a:as) =
  S ∋ s    T(s : S) ∋ t
 ———————————————————————
 Σ(S, x. T[x]) ∋ σ(s, t)
+
+
+⋆ ∋ S   x : S ⊢ ⋆ ∋ T(x)    S = U
+—————————————————————————————————
+  fst ∋ Pi (y : Σ(S, x. T[x]) U
+
+⋆ ∋ S   x : S ⊢ ⋆ ∋ T(x)   T(fst y) = U
+———————————————————————————————————————
+ snd ∋ Pi (y : Σ(S, x. T[x]) U
 
 -}
 isTypeOf :: Context -> Syntax 'C -> Syntax 'C -> Bool
@@ -110,7 +132,31 @@ isTypeOf = pre
 
     go :: Context -> Syntax 'C -> Syntax 'C -> Bool
     -- Wew! Feel the wind in your hair
+    go context ty Fst =
+      case ty of
+        Pi (Sigma s t) u ->
+          isTypeOf context Type s &&
+          isTypeOf (Ann s Type : context) Type t &&
+          s == u
+        _ -> False
+    go context ty Snd =
+      case ty of
+        Pi sig@(Sigma s t) u ->
+          isTypeOf context Type s &&
+          isTypeOf (Ann s Type : context) Type t &&
+          abstract "y" (subst (App (Ann Fst $ mkPi "z" sig s) $ Embed $ Name "y") t) == u
+        _ -> False
     go context ty Type = ty == Type
+    go context ty (Sigma s t) =
+      isTypeOf context Type s &&
+      isTypeOf (Ann s Type : context) Type t &&
+      ty == Type
+    go context ty (MkSigma s t) =
+      case ty of
+        Sigma sTy tTy ->
+          isTypeOf context sTy s &&
+          isTypeOf (Ann s sTy : context) tTy t
+        _ -> False
     go context ty (Embed e) =
       case inferType context e of
         Nothing -> False
@@ -150,6 +196,14 @@ inferType = post
 step :: Context -> Syntax cat -> Maybe (Syntax cat)
 step context e =
   case e of
+    Fst -> Nothing
+    Snd -> Nothing
+    Sigma a b ->
+      (\a' -> Sigma a' b) <$> step context a <|>
+      Sigma a <$> step context b
+    MkSigma a b ->
+      (\a' -> MkSigma a' b) <$> step context a <|>
+      MkSigma a <$> step context b
     Type -> Nothing
     Pi{} -> Nothing
     Lambda{} -> Nothing
@@ -159,6 +213,8 @@ step context e =
       case f of
         Ann (Lambda a) (Pi b c) ->
           Just $ Ann (subst (Ann x b) a) (subst (Ann x b) c)
+        Ann (MkSigma a b) (Sigma c d) ->
+          Just $ Ann (subst (Ann x b) a) (subst (Ann x b) c)
         _ -> error "stuck - applying argument to non-function"
     Embed (Ann a _) -> Just a
     Embed a -> Embed <$> step context a
@@ -166,7 +222,7 @@ step context e =
       (\a' -> Ann a' b) <$> step context a <|>
       Ann a <$> step context b
     Var n ->
-      Just .
+      Just $
       fromMaybe
         (error $ "stuck - bound variable (" ++ show n ++ ") not in context (" ++ show context ++ ")")
         (index n context)
